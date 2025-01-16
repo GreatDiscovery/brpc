@@ -21,6 +21,7 @@
 #include <butil/logging.h>
 #include <brpc/server.h>
 #include <brpc/restful.h>
+#include <brpc/http_status_code.h>
 #include <json2pb/pb_to_json.h>
 #include "http.pb.h"
 
@@ -169,6 +170,77 @@ public:
             cntl->response_attachment().append(unresolved_path);
         }
     }
+    void redirect(google::protobuf::RpcController* cntl_base,
+              const RedirectRequest* request,
+              HttpResponse* response,
+              google::protobuf::Closure* done) {
+        brpc::ClosureGuard done_guard(done);
+        brpc::Controller* cntl = static_cast<brpc::Controller*>(cntl_base);
+        auto* os = new butil::IOBufBuilder();
+
+        auto etcd_addr = request->etcd_addr();
+        auto ca_id = request->ca_id();
+        auto cluster = request->cluster();
+        auto service = request->service();
+        if (!validateRedirectRequest(request, os)) {
+            LOG(ERROR) << "Invalid redirect request";
+            cntl->http_response().set_status_code(brpc::HTTP_STATUS_BAD_REQUEST);
+            os->move_to(cntl->response_attachment());
+            delete os;
+            return;
+        }
+        try {
+            // do something
+        } catch (const char* msg) {
+            LOG(ERROR) << "failed, msg: " << msg;
+            *os << "failed, msg: " << msg;
+            cntl->http_response().set_status_code(brpc::HTTP_STATUS_INTERNAL_SERVER_ERROR);
+            os->move_to(cntl->response_attachment());
+            delete os;
+            return;
+        }
+
+        cntl->http_response().set_status_code(brpc::HTTP_STATUS_OK);
+        *os << "etcd_addr: " + etcd_addr + " ca_id: " + ca_id + " cluster: " + cluster + " service:" + std::to_string(service);
+        os->move_to(cntl->response_attachment());
+        delete os;
+    }
+
+    bool validateRedirectRequest(const RedirectRequest* request, butil::IOBufBuilder* os) {
+        if (request->etcd_addr().empty() || request->ca_id().empty() || request->cluster().empty()) {
+            *os << "param is empty";
+            return false;
+        }
+        std::vector<std::string> etcd_list;
+        splitString(request->etcd_addr(), ',', etcd_list);
+        if (etcd_list.size() == 0) {
+            *os << "etcd_addr is empty";
+            return false;
+        }
+        for (auto list : etcd_list) {
+            if (list.empty()) {
+                *os << "etcd_addr is empty";
+                return false;
+            }
+            if (list.find("list://") != 0) {
+                *os << "etcd_addr is not strat with 'list://'";
+                return false;
+            }
+        }
+        if (request->cluster().find("k8redis-") != 0) {
+            *os << "cluster is not strat with  'k8redis-'";
+            return false;
+        }
+        return true;
+    }
+
+    void splitString(const std::string &str, char delimiter, std::vector<std::string> &out) {
+        std::stringstream ss(str);
+        std::string item;
+        while (std::getline(ss, item, delimiter)) {
+            out.push_back(item);
+        }
+    }
 };
 
 class HttpSSEServiceImpl : public HttpSSEService {
@@ -252,7 +324,8 @@ int main(int argc, char* argv[]) {
                           brpc::SERVER_DOESNT_OWN_SERVICE,
                           "/v1/queue/start   => start,"
                           "/v1/queue/stop    => stop,"
-                          "/v1/queue/stats/* => getstats") != 0) {
+                          "/v1/queue/stats/* => getstats,"
+                          "/v1/redis/redirect/* ==> redirect") != 0) {
         LOG(ERROR) << "Fail to add queue_svc";
         return -1;
     }
