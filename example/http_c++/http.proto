@@ -24,14 +24,14 @@ message HttpRequest {};
 message HttpResponse {};
 
 enum Service {
-  REDIS = 0;
-  REDKV = 1;
+  redis = 0;
+  redkv = 1;
 }
 message RedirectRequest {
     required string etcd_addr = 1;
     required string ca_id = 2;
     required string cluster = 3;
-    optional Service service = 4 [default = REDIS];
+    required Service service = 4;
 };
 
 service HttpService {
@@ -47,6 +47,8 @@ service QueueService {
   rpc start(HttpRequest) returns (HttpResponse);
   rpc stop(HttpRequest) returns (HttpResponse);
   rpc getstats(HttpRequest) returns (HttpResponse);
+  rpc ping(HttpRequest) returns (HttpResponse);
+  rpc info(HttpRequest) returns (HttpResponse);
   rpc redirect(RedirectRequest) returns (HttpResponse);
 };
 

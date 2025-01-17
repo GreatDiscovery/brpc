@@ -25,7 +25,7 @@
 #include <json2pb/pb_to_json.h>
 #include "http.pb.h"
 
-DEFINE_int32(port, 8010, "TCP Port of this server");
+DEFINE_int32(port, 8890, "TCP Port of this server");
 DEFINE_int32(idle_timeout_s, -1, "Connection will be closed if there is no "
              "read/write operations during the last `idle_timeout_s'");
 
@@ -170,6 +170,49 @@ public:
             cntl->response_attachment().append(unresolved_path);
         }
     }
+
+    void ping(google::protobuf::RpcController *cntl_base,
+                       const HttpRequest *,
+                       HttpResponse *,
+                       google::protobuf::Closure *done) {
+        // This object helps you to call done->Run() in RAII style. If you need
+        // to process the request asynchronously, pass done_guard.release().
+        brpc::ClosureGuard done_guard(done);
+
+        brpc::Controller *cntl = static_cast<brpc::Controller *>(cntl_base);
+        // Fill response.
+        cntl->http_response().set_content_type("text/plain");
+
+        const std::string &cluster = cntl->http_request().unresolved_path();
+
+        auto *os = new butil::IOBufBuilder();
+        *os << "pong";
+        os->move_to(cntl->response_attachment());
+        delete os;
+    }
+
+    void info(google::protobuf::RpcController *cntl_base,
+                   const HttpRequest *,
+                   HttpResponse *,
+                   google::protobuf::Closure *done) {
+        // This object helps you to call done->Run() in RAII style. If you need
+        // to process the request asynchronously, pass done_guard.release().
+        brpc::ClosureGuard done_guard(done);
+
+        brpc::Controller *cntl = static_cast<brpc::Controller *>(cntl_base);
+        // Fill response.
+        cntl->http_response().set_content_type("text/plain");
+
+        auto *os = new butil::IOBufBuilder();
+        std::string etcd_addr = "1";
+        std::string ca_id = "2";
+        std::string cluster = "k8redis-jiayun-shrink-2";
+        std::string service = "redis";
+        *os << "service:" + service + ";cluster:" + cluster;
+        os->move_to(cntl->response_attachment());
+        delete os;
+    }
+
     void redirect(google::protobuf::RpcController* cntl_base,
               const RedirectRequest* request,
               HttpResponse* response,
@@ -178,10 +221,11 @@ public:
         brpc::Controller* cntl = static_cast<brpc::Controller*>(cntl_base);
         auto* os = new butil::IOBufBuilder();
 
-        auto etcd_addr = request->etcd_addr();
-        auto ca_id = request->ca_id();
-        auto cluster = request->cluster();
-        auto service = request->service();
+        auto& etcd_addr = request->etcd_addr();
+        auto& ca_id = request->ca_id();
+        auto& cluster = request->cluster();
+        auto service = request->service() == redis ? "redis" : "redkv";
+        LOG(INFO) << "Redirect start: " << "etcd_addr:" + etcd_addr + ";ca_id:" + ca_id + ";cluster:" + cluster + ";service:" + service;
         if (!validateRedirectRequest(request, os)) {
             LOG(ERROR) << "Invalid redirect request";
             cntl->http_response().set_status_code(brpc::HTTP_STATUS_BAD_REQUEST);
@@ -191,17 +235,17 @@ public:
         }
         try {
             // do something
-        } catch (const char* msg) {
-            LOG(ERROR) << "failed, msg: " << msg;
-            *os << "failed, msg: " << msg;
+        } catch (const std::runtime_error &e) {
+            LOG(ERROR) << "failed, msg: " << e.what();
+            *os << "failed, msg: " << e.what();
             cntl->http_response().set_status_code(brpc::HTTP_STATUS_INTERNAL_SERVER_ERROR);
             os->move_to(cntl->response_attachment());
             delete os;
             return;
         }
-
+        LOG(INFO) << "Redirect end: " << "etcd_addr:" + etcd_addr + ";ca_id:" + ca_id + ";cluster:" + cluster + ";service:" + service;
         cntl->http_response().set_status_code(brpc::HTTP_STATUS_OK);
-        *os << "etcd_addr: " + etcd_addr + " ca_id: " + ca_id + " cluster: " + cluster + " service:" + std::to_string(service);
+        *os << "etcd_addr:" + etcd_addr + ";ca_id:" + ca_id + ";cluster:" + cluster + ";service:" + service;
         os->move_to(cntl->response_attachment());
         delete os;
     }
@@ -325,7 +369,9 @@ int main(int argc, char* argv[]) {
                           "/v1/queue/start   => start,"
                           "/v1/queue/stop    => stop,"
                           "/v1/queue/stats/* => getstats,"
-                          "/v1/redis/redirect/* ==> redirect") != 0) {
+                          "/v1/redis/smart_client/redirect/* => redirect,"
+                          "/v1/redis/ping/* => ping,"
+                          "/v1/redis/smart_client/info/* => info") != 0) {
         LOG(ERROR) << "Fail to add queue_svc";
         return -1;
     }
@@ -341,6 +387,7 @@ int main(int argc, char* argv[]) {
     options.mutable_ssl_options()->default_cert.certificate = FLAGS_certificate;
     options.mutable_ssl_options()->default_cert.private_key = FLAGS_private_key;
     options.mutable_ssl_options()->ciphers = FLAGS_ciphers;
+    LOG(ERROR) << "Starting server:" << FLAGS_port;
     if (server.Start(FLAGS_port, &options) != 0) {
         LOG(ERROR) << "Fail to start HttpServer";
         return -1;
